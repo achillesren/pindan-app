@@ -1,5 +1,5 @@
 import streamlit as st
-import re 
+import re
 
 ### 设置页面标题
 
