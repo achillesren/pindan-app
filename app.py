@@ -9,37 +9,30 @@ _clean()
 import streamlit as st
 import pandas as pd
 import requests
+import json
 
 st.set_page_config(page_title="海外自助拼单系统", page_icon="🐷", layout="wide")
 
-# 从分享链接中提取表格 ID
 def get_ss_id(url):
     import re
     match = re.search(r'/d/([a-zA-Z0-9-_]+)', url)
     return match.group(1) if match else ""
 
-# 读取谷歌表格数据
 def load_data():
     try:
         url = st.secrets["secrets"]["public_gsheets_url"]
         ss_id = get_ss_id(url)
-        # 用 gviz 接口读取公开的网格数据
         csv_url = f"https://google.com{ss_id}/gviz/tq?tqx=out:csv"
         df = pd.read_csv(csv_url)
-        # 确保列名匹配
         df.columns = [c.lower().strip() for c in df.columns]
-        # 补齐缺少的列
         for col in ["name", "item", "amount", "unit", "cost"]:
-            if col not in df.columns:
-                df[col] = None
+            if col not in df.columns: df[col] = None
         return df[["name", "item", "amount", "unit", "cost"]].dropna(subset=["name"])
     except:
         return pd.DataFrame(columns=["name", "item", "amount", "unit", "cost"])
 
-# 初始化加载
-if "initialized" not in st.session_state:
+if "df_cached" not in st.session_state:
     st.session_state.df_cached = load_data()
-    st.session_state.initialized = True
 
 MEAT_MENU = {
     "五花肉": {"price": 8.00, "unit": "公斤", "box": 5.0},
@@ -70,20 +63,14 @@ st.markdown("群友请直接在下方**输入昵称、选择菜品**提交订购
 
 with st.sidebar:
     st.header("⚙️ 团长对账面板")
-    st.write("💡 当开启新一轮拼单时，点击下方按钮可以一键清空目前的数据看板：")
-    
-    # 防止群友乱点，增加一个简单的隐藏钥匙
     admin_key = st.text_input("🗝️ 输入清空钥匙：", type="password", placeholder="请输入清空授权码")
     if st.button("🗑️ 确认清空看板并开启下次拼单", type="secondary"):
-        if admin_key == "1234":  # 默认钥匙是 1234
+        if admin_key == "1234":
             st.session_state.df_cached = pd.DataFrame(columns=["name", "item", "amount", "unit", "cost"])
             st.success("🎉 看板数据已成功归零！")
-            st.caption("提示：历史账单您依然可以直接在谷歌表格里查看和删改。")
-        else:
-            st.error("钥匙输入错误，无法清空！")
+        else: st.error("钥匙输入错误，无法清空！")
 
 col1, col2 = st.columns(2)
-
 with col1:
     st.subheader("🛒 群友点菜登记")
     with st.form("order_form", clear_on_submit=True):
@@ -96,28 +83,28 @@ with col1:
         submit_btn = st.form_submit_button("🚀 提交我的拼单", type="primary")
         
         if submit_btn:
-            if not user_name.strip():
-                st.error("请输入您的微信昵称后再提交！")
+            if not user_name.strip(): st.error("请输入您的微信昵称后再提交！")
             else:
                 cost = order_amount * current_price
-                new_row = pd.DataFrame([{
-                    "name": user_name.strip(),
-                    "item": selected_meat,
-                    "amount": order_amount,
-                    "unit": current_unit,
-                    "cost": cost
-                }])
-                # 实时追加进内存，并由系统批量同步至云端工作区
+                payload = {"name": user_name.strip(), "item": selected_meat, "amount": order_amount, "unit": current_unit, "cost": cost}
+                new_row = pd.DataFrame([payload])
                 st.session_state.df_cached = pd.concat([st.session_state.df_cached, new_row], ignore_index=True)
-                st.success(f"🎉 登记成功！{user_name.strip()} 的订单已完美同步云端看板！")
-                st.caption("请在右侧查看您的账单小计。")
+                
+                # 显式捕获云端接口的真实反馈
+                try:
+                    api_url = st.secrets["secrets"]["script_api_url"]
+                    res = requests.post(api_url, data=json.dumps(payload), headers={"Content-Type": "application/json"}, timeout=10)
+                    st.info(f"📡 传输状态反馈 ➔ 状态码: {res.status_code} | 返回信息: {res.text[:100]}")
+                except Exception as e:
+                    st.error(f"❌ 传输失败，网络原因: {str(e)}")
+                
+                st.success(f"🎉 登记成功！{user_name.strip()} 的订单已更新！")
+                st.rerun()
 
 df_display = st.session_state.df_cached
-
 with col2:
     st.subheader("📊 实时拼单看板（整箱进度）")
-    if df_display.empty or len(df_display) == 0:
-        st.info("当前还没有人下单哦，赶紧把链接发到群里让大家选菜吧！")
+    if df_display.empty or len(df_display) == 0: st.info("当前还没有人下单哦！")
     else:
         tab_box, tab_bill = st.tabs(["📦 货物成箱缺口", "💰 每人应付账单"])
         with tab_box:
@@ -125,19 +112,14 @@ with col2:
             summary = df_display.groupby("item")["amount"].sum().to_dict()
             for meat, total in summary.items():
                 if meat in MEAT_MENU and total > 0:
-                    box_w = MEAT_MENU[meat]["box"]
-                    unit = MEAT_MENU[meat]["unit"]
-                    current_boxes = total / box_w
-                    needed_next = box_w - (total % box_w)
+                    box_w = MEAT_MENU[meat]["box"]; unit = MEAT_MENU[meat]["unit"]
+                    current_boxes = total / box_w; needed_next = box_w - (total % box_w)
                     st.markdown(f"**【{meat}】** 已被预订：**{total:.1f}** {unit}")
-                    if total % box_w == 0:
-                        st.success(f" └─ 🎉 刚好凑满 {int(current_boxes)} 箱！")
-                    else:
-                        st.info(f" └─ 📊 当前进度: {current_boxes:.2f} 箱（还差 **{needed_next:.1f}** {unit} 凑满整箱）")
+                    if total % box_w == 0: st.success(f" └─ 🎉 刚好凑满 {int(current_boxes)} 箱！")
+                    else: st.info(f" └─ 📊 当前进度: {current_boxes:.2f} 箱（还差 **{needed_next:.1f}** {unit} 凑满整箱）")
                     details = df_display[df_display["item"] == meat]
                     detail_strs = [f"{row['name']}({row['amount']}{unit})" for _, row in details.iterrows()]
-                    st.caption(f" 👥 已订群友：{', '.join(detail_strs)}")
-                    st.write("---")
+                    st.caption(f" 👥 已订群友：{', '.join(detail_strs)}"); st.write("---")
         with tab_bill:
             df_display["cost"] = pd.to_numeric(df_display["cost"], errors='coerce').fillna(0)
             user_summary = df_display.groupby("name")["cost"].sum().to_dict()
@@ -149,6 +131,5 @@ with col2:
                 for _, row in user_details.iterrows():
                     st.write(f" └─ {row['item']} : {row['amount']} {row['unit']}")
                     wechat_text += f" └─ {row['item']} {row['amount']}{row['unit']}\n"
-            st.write("---")
-            st.subheader("💬 复制群发对账文本")
+            st.write("---"); st.subheader("💬 复制群发对账文本")
             st.text_area("点击框内复制发回微信群：", value=wechat_text, height=150)
