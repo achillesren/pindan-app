@@ -1,15 +1,15 @@
 #
 import streamlit as st
-import pandas as pd 
+import pandas as pd
 
-st.set_page_config(page_title="海外自助拼单系统", page_icon="🐷", layout="wide") 
+st.set_page_config(page_title="海外自助拼单系统", page_icon="🐷", layout="wide")
 
-### 初始化服务器全局缓存（用来存所有群友的下单数据）
+### 初始化服务器全局缓存（用来存所有群友的下单数据
 
 if "pindan_db" not in st.session_state:
-st.session_state.pindan_db = [] 
+st.session_state.pindan_db = []
 
-### 定义你的肉类商品清单（根据你之前的接龙信息初始化配置）
+### 定义你的肉类商品清单（根据你之前的接龙信息初始化配置
 
 MEAT_MENU = {
 "五花肉": {"price": 8.00, "unit": "公斤", "box": 5.0},
@@ -32,10 +32,10 @@ MEAT_MENU = {
 "肉皮": {"price": 3.50, "unit": "公斤", "box": 20.0},
 "猪里脊": {"price": 7.50, "unit": "公斤", "box": 30.0},
 "猪肝": {"price": 4.00, "unit": "公斤", "box": 13.0}
-} 
+}
 
 st.title("🐷 海外微信群——自助拼单自提系统")
-st.markdown("群友请直接在下方**输入昵称、选择菜品**提交订购。系统会自动实时计算成箱进度和总账！") 
+st.markdown("群友请直接在下方**输入昵称、选择菜品**提交订购。系统会自动实时计算成箱进度和总账！")
 
 ### 侧边栏：团长管理面板
 
@@ -43,11 +43,11 @@ with st.sidebar:
 st.header("⚙️ 团长对账面板")
 if st.button("🗑️ 清空所有拼单数据", type="secondary"):
 st.session_state.pindan_db = []
-st.success("数据已全部清空，可以开启新一轮拼单！") 
+st.success("数据已全部清空，可以开启新一轮拼单！")
 
 ### 布局布局：左边群友自助下单，右边看统计进度
 
-col1, col2 = st.columns() 
+col1, col2 = st.columns()
 
 with col1:
 st.subheader("🛒 群友点菜登记")
@@ -59,18 +59,18 @@ selected_meat = st.selectbox("🥩 选择您要买的肉类：", list(MEAT_MENU.
 
 current_unit = MEAT_MENU[selected_meat]["unit"]
 current_price = MEAT_MENU[selected_meat]["price"]
-st.caption(f"当前单价: **{current_price:.2f}** / {current_unit}") 
+st.caption(f"当前单价: **{current_price:.2f}** / {current_unit}")
 
 ### 输入数量
 
-order_amount = st.number_input(f"🔢 订购数量（单位：{current_unit}）：", min_value=0.1, value=1.0, step=0.5) 
+order_amount = st.number_input(f"🔢 订购数量（单位：{current_unit}）：", min_value=0.1, value=1.0, step=0.5)
 
-submit_btn = st.form_submit_button("🚀 提交我的拼单", type="primary") 
+submit_btn = st.form_submit_button("🚀 提交我的拼单", type="primary")
 
 if submit_btn:
 if not user_name.strip():
 st.error("请输入您的微信昵称后再提交！")
-else: 
+else:
 
 ### 计算费用
 
@@ -83,20 +83,20 @@ st.session_state.pindan_db.append({
 "unit": current_unit,
 "cost": cost
 })
-st.success(f"🎉 登记成功！{user_name} 成功预订了 {selected_meat} {order_amount} {current_unit}！") 
+st.success(f"🎉 登记成功！{user_name} 成功预订了 {selected_meat} {order_amount} {current_unit}！")
 
 with col2:
 st.subheader("📊 实时拼单看板（整箱进度）")
 if not st.session_state.pindan_db:
 st.info("当前还没有人下单哦，赶紧把链接发到群里让大家选菜吧！")
 else:
-df = pd.DataFrame(st.session_state.pindan_db) 
+df = pd.DataFrame(st.session_state.pindan_db)
 
 ### 标签页展示两种视角
 
-tab_box, tab_bill = st.tabs(["📦 货物成箱缺口", "💰 每人应付账单"]) 
+tab_box, tab_bill = st.tabs(["📦 货物成箱缺口", "💰 每人应付账单"])
 
-with tab_box: 
+with tab_box:
 
 ### 统计每种肉的总量
 
@@ -105,7 +105,7 @@ for meat, total in summary.items():
 box_w = MEAT_MENU[meat]["box"]
 unit = MEAT_MENU[meat]["unit"]
 current_boxes = total / box_w
-needed_next = box_w - (total % box_w) 
+needed_next = box_w - (total % box_w)
 
 st.markdown(f"**【{meat}】** 已被预订：**{total:.1f}** {unit}")
 if total % box_w == 0:
@@ -118,12 +118,12 @@ detail_strs = [f"{row['name']}({row['amount']}{unit})" for _, row in details.ite
 st.caption(f" 👥 已订群友：{', '.join(detail_strs)}")
 st.write("---")
 
-with tab_bill: 
+with tab_bill:
 
 ### 统计每个人的总金额
 
 user_summary = df.groupby("name")["cost"].sum().to_dict()
-wechat_text = "📊 【自助拼单实时对账单】\n" 
+wechat_text = "📊 【自助拼单实时对账单】\n"
 
 for user, total_cost in user_summary.items():
 st.warning(f"👤 **{user}** —— 累计应付: **{total_cost:.2f}**")
@@ -132,7 +132,7 @@ wechat_text += f"\n@{user} 应付：{total_cost:.2f}\n"
 user_details = df[df["name"] == user]
 for _, row in user_details.iterrows():
 st.write(f" └─ {row['item']} : {row['amount']} {row['unit']}")
-wechat_text += f" └─ {row['item']} {row['amount']}{row['unit']}\n" 
+wechat_text += f" └─ {row['item']} {row['amount']}{row['unit']}\n"
 
 st.write("---")
 st.subheader("💬 复制群发对账文本")
