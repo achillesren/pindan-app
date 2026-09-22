@@ -10,6 +10,7 @@ import streamlit as st
 import pandas as pd
 import requests
 import json
+import time
 
 st.set_page_config(page_title="海外自助拼单系统", page_icon="🐷", layout="wide")
 
@@ -18,48 +19,50 @@ def get_ss_id(url):
     match = re.search(r'/d/([a-zA-Z0-9-_]+)', url)
     return match.group(1) if match else ""
 
-# 强制每次刷新都实时去 Google 表格拉取最新完整数据，完全取消缓存
-def load_data_live():
+# 终极无缓存拉取器：通过在URL末尾添加随机时间戳，强行穿透谷歌服务器的一切缓存拦截
+def load_data_live_no_cache():
     try:
         url = st.secrets["secrets"]["public_gsheets_url"]
         ss_id = get_ss_id(url)
-        csv_url = f"https://google.com{ss_id}/gviz/tq?tqx=out:csv"
+        # 加上 t=time.time()，让谷歌以为每次都是全新请求，从而1秒内交出最新表格数据
+        csv_url = f"https://google.com{ss_id}/export?format=csv&t={int(time.time())}"
         df = pd.read_csv(csv_url)
         
         # 强制格式化列名
         df.columns = [str(c).lower().strip() for c in df.columns]
         
-        # 【超级列名自动纠错对齐网】针对当前表格列移位进行完美自适应修复
-        # 如果C列(amount)为空，而D列和E列有值，说明发生了列移位，我们把数据强行复位
-        if len(df) > 0:
-            for idx, row in df.iterrows():
-                # 检查原本的第3列(amount)是否未捕获到数字，若是，则自动从后面的列中抽取数量和金额
-                if pd.isna(df.loc[idx, "amount"]) or str(df.loc[idx, "amount"]).strip() == "":
-                    # 尝试从第4列提取数量
-                    if "unit" in df.columns and not pd.isna(df.loc[idx, "unit"]):
-                        try:
-                            df.loc[idx, "amount"] = float(df.loc[idx, "unit"])
-                            df.loc[idx, "unit"] = "公斤"
-                        except: pass
-                    # 尝试从第5列提取总价
-                    if "cost" in df.columns and not pd.isna(df.loc[idx, "cost"]):
-                        try:
-                            df.loc[idx, "cost"] = float(df.loc[idx, "cost"])
-                        except: pass
-        
+        # 如果A列或者B列全空，则直接返回空表
+        if df.empty or "name" not in df.columns:
+            return pd.DataFrame(columns=["name", "item", "amount", "unit", "cost"])
+            
+        # 纠错纠正：针对当前表格 amount 为空，而数量移位到 unit 的现象进行终极自适应修复
+        for idx, row in df.iterrows():
+            if pd.isna(df.loc[idx, "amount"]) or str(df.loc[idx, "amount"]).strip() == "":
+                if "unit" in df.columns and not pd.isna(df.loc[idx, "unit"]):
+                    try:
+                        df.loc[idx, "amount"] = float(df.loc[idx, "unit"])
+                        df.loc[idx, "unit"] = "公斤"
+                    except: pass
+                if "cost" in df.columns and not pd.isna(df.loc[idx, "cost"]):
+                    try:
+                        df.loc[idx, "cost"] = float(df.loc[idx, "cost"])
+                    except: pass
+                    
         # 补齐缺少的列名模板
         for col in ["name", "item", "amount", "unit", "cost"]:
             if col not in df.columns: df[col] = 0
             
-        # 名字去空格净化器
+        # 名字去空格净化
         df["name"] = df["name"].astype(str).str.strip()
         df["item"] = df["item"].astype(str).str.strip()
         
-        return df[["name", "item", "amount", "unit", "cost"]].dropna(subset=["name"])
+        # 过滤掉由于没有填名字产生的脏数据行
+        return df[df["name"].str.lower() != "nan"].dropna(subset=["name"])
     except Exception as e:
         return pd.DataFrame(columns=["name", "item", "amount", "unit", "cost"])
 
-df_display = load_data_live()
+# 每次任何人打开网页或点击提交，都强制零缓存实时拉取最新云端表格
+df_display = load_data_live_no_cache()
 
 # 初始化每位用户本地独立的购物车缓存
 if "cart" not in st.session_state:
@@ -149,7 +152,6 @@ with col1:
                     try:
                         api_url = st.secrets["secrets"]["script_api_url"]
                         for item in st.session_state.cart:
-                            # 严格匹配当前 Google 脚本送出的物理列序列，确保数据对齐
                             payload = {
                                 "name": user_name.strip(),
                                 "item": item["item"],
@@ -160,6 +162,8 @@ with col1:
                             requests.post(api_url, data=json.dumps(payload), headers={"Content-Type": "application/json"}, timeout=10)
                         st.success(f"🎉 恭喜！{user_name.strip()} 的这 {len(st.session_state.cart)} 样菜品已完美合并提交成功！")
                         st.session_state.cart = [] 
+                        # 强行给云端拉取程序留出2秒延迟，确保谷歌服务器完成存盘动作
+                        time.sleep(1.5)
                         st.rerun()
                     except Exception as e:
                         st.error(f"❌ 云端保存失败，网络原因: {str(e)}")
@@ -168,16 +172,13 @@ with col1:
 
 with col2:
     st.subheader("📊 实时拼单看板（整箱进度）")
-    # 彻底清除未解析到名字的脏行
-    df_clean_display = df_display[df_display["name"].str.lower() != "nan"]
-    
-    if df_clean_display.empty or len(df_clean_display) == 0:
+    if df_display.empty or len(df_display) == 0:
         st.info("当前还没有人下单哦，赶紧把链接发到群里让大家选菜吧！")
     else:
         tab_box, tab_bill = st.tabs(["📦 货物成箱缺口", "💰 每人应付账单"])
         with tab_box:
-            df_clean_display["amount"] = pd.to_numeric(df_clean_display["amount"], errors='coerce').fillna(0)
-            summary = df_clean_display.groupby("item")["amount"].sum().to_dict()
+            df_display["amount"] = pd.to_numeric(df_display["amount"], errors='coerce').fillna(0)
+            summary = df_display.groupby("item")["amount"].sum().to_dict()
             for meat, total in summary.items():
                 if meat in MEAT_MENU and total > 0:
                     box_w = MEAT_MENU[meat]["box"]; unit = MEAT_MENU[meat]["unit"]
@@ -185,17 +186,17 @@ with col2:
                     st.markdown(f"**【{meat}】** 已被预订：**{total:.1f}** {unit}")
                     if total % box_w == 0: st.success(f" └─ 🎉 刚好凑满 {int(current_boxes)} 箱！")
                     else: st.info(f" └─ 📊 当前进度: {current_boxes:.2f} 箱（还差 **{needed_next:.1f}** {unit} 凑满整箱）")
-                    details = df_clean_display[df_clean_display["item"] == meat]
+                    details = df_display[df_display["item"] == meat]
                     detail_strs = [f"{row['name']}({row['amount']}{unit})" for _, row in details.iterrows()]
                     st.caption(f" 👥 已订群友：{', '.join(detail_strs)}"); st.write("---")
         with tab_bill:
-            df_clean_display["cost"] = pd.to_numeric(df_clean_display["cost"], errors='coerce').fillna(0)
-            user_summary = df_clean_display.groupby("name")["cost"].sum().to_dict()
+            df_display["cost"] = pd.to_numeric(df_display["cost"], errors='coerce').fillna(0)
+            user_summary = df_display.groupby("name")["cost"].sum().to_dict()
             wechat_text = "📊 【自助拼单实时对账单】\n"
             for user, total_cost in user_summary.items():
                 st.warning(f"👤 **{user}** —— 累计应付: **{total_cost:.2f}**")
                 wechat_text += f"\n@{user} 应付：{total_cost:.2f}\n"
-                user_details = df_clean_display[df_clean_display["name"] == user]
+                user_details = df_display[df_display["name"] == user]
                 for _, row in user_details.iterrows():
                     st.write(f" └─ {row['item']} : {row['amount']} {row['unit']}")
                     wechat_text += f" └─ {row['item']} {row['amount']}{row['unit']}\n"
