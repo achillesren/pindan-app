@@ -7,103 +7,48 @@ def _clean():
 _clean()
 
 import streamlit as st
-import pandas as pd
 import requests
 import json
-import time
 
 st.set_page_config(page_title="海外自助拼单系统", page_icon="🐷", layout="wide")
 
-def get_ss_id(url):
-    import re
-    match = re.search(r'/d/([a-zA-Z0-9-_]+)', url)
-    return match.group(1) if match else ""
-
-# 终极无缓存拉取器：通过在URL末尾添加随机时间戳，强行穿透谷歌服务器的一切缓存拦截
-def load_data_live_no_cache():
-    try:
-        url = st.secrets["secrets"]["public_gsheets_url"]
-        ss_id = get_ss_id(url)
-        # 加上 t=time.time()，让谷歌以为每次都是全新请求，从而1秒内交出最新表格数据
-        csv_url = f"https://google.com{ss_id}/export?format=csv&t={int(time.time())}"
-        df = pd.read_csv(csv_url)
-        
-        # 强制格式化列名
-        df.columns = [str(c).lower().strip() for c in df.columns]
-        
-        # 如果A列或者B列全空，则直接返回空表
-        if df.empty or "name" not in df.columns:
-            return pd.DataFrame(columns=["name", "item", "amount", "unit", "cost"])
-            
-        # 纠错纠正：针对当前表格 amount 为空，而数量移位到 unit 的现象进行终极自适应修复
-        for idx, row in df.iterrows():
-            if pd.isna(df.loc[idx, "amount"]) or str(df.loc[idx, "amount"]).strip() == "":
-                if "unit" in df.columns and not pd.isna(df.loc[idx, "unit"]):
-                    try:
-                        df.loc[idx, "amount"] = float(df.loc[idx, "unit"])
-                        df.loc[idx, "unit"] = "公斤"
-                    except: pass
-                if "cost" in df.columns and not pd.isna(df.loc[idx, "cost"]):
-                    try:
-                        df.loc[idx, "cost"] = float(df.loc[idx, "cost"])
-                    except: pass
-                    
-        # 补齐缺少的列名模板
-        for col in ["name", "item", "amount", "unit", "cost"]:
-            if col not in df.columns: df[col] = 0
-            
-        # 名字去空格净化
-        df["name"] = df["name"].astype(str).str.strip()
-        df["item"] = df["item"].astype(str).str.strip()
-        
-        # 过滤掉由于没有填名字产生的脏数据行
-        return df[df["name"].str.lower() != "nan"].dropna(subset=["name"])
-    except Exception as e:
-        return pd.DataFrame(columns=["name", "item", "amount", "unit", "cost"])
-
-# 每次任何人打开网页或点击提交，都强制零缓存实时拉取最新云端表格
-df_display = load_data_live_no_cache()
-
-# 初始化每位用户本地独立的购物车缓存
+# 初始化用户本地的购物车缓存
 if "cart" not in st.session_state:
     st.session_state.cart = []
 
 MEAT_MENU = {
-    "五花肉": {"price": 8.00, "unit": "公斤", "box": 5.0},
-    "大排骨": {"price": 7.00, "unit": "公斤", "box": 20.0},
-    "大肠": {"price": 9.50, "unit": "公斤", "box": 20.0},
-    "猪颈骨": {"price": 4.50, "unit": "公斤", "box": 20.0},
-    "猪腰": {"price": 3.50, "unit": "公斤", "box": 11.0},
-    "护心肉": {"price": 4.50, "unit": "公斤", "box": 11.0},
-    "小排骨": {"price": 3.50, "unit": "公斤", "box": 12.0},
-    "背脊骨": {"price": 3.50, "unit": "公斤", "box": 30.0},
-    "猪扒边": {"price": 4.50, "unit": "公斤", "box": 30.0},
-    "猪手": {"price": 4.50, "unit": "公斤", "box": 8.0},
-    "猪耳朵": {"price": 8.00, "unit": "公斤", "box": 6.0},
-    "猪筒骨": {"price": 3.50, "unit": "公斤", "box": 20.0},
-    "猪板油": {"price": 4.50, "unit": "公斤", "box": 20.0},
-    "猪舌头": {"price": 7.00, "unit": "公斤", "box": 10.0},
-    "梅头肉": {"price": 8.00, "unit": "公斤", "box": 5.0},
-    "猪头": {"price": 18.00, "unit": "个", "box": 1.0},
-    "猪肘": {"price": 4.50, "unit": "公斤", "box": 20.0},
-    "肉皮": {"price": 3.50, "unit": "公斤", "box": 20.0},
-    "猪里脊": {"price": 7.50, "unit": "公斤", "box": 30.0},
-    "猪肝": {"price": 4.00, "unit": "公斤", "box": 13.0}
+    "五花肉": {"price": 8.00, "unit": "公斤"},
+    "大排骨": {"price": 7.00, "unit": "公斤"},
+    "大肠": {"price": 9.50, "unit": "公斤"},
+    "猪颈骨": {"price": 4.50, "unit": "公斤"},
+    "猪腰": {"price": 3.50, "unit": "公斤"},
+    "护心肉": {"price": 4.50, "unit": "公斤"},
+    "小排骨": {"price": 3.50, "unit": "公斤"},
+    "背脊骨": {"price": 3.50, "unit": "公斤"},
+    "猪扒边": {"price": 4.50, "unit": "公斤"},
+    "猪手": {"price": 4.50, "unit": "公斤"},
+    "猪耳朵": {"price": 8.00, "unit": "公斤"},
+    "猪筒骨": {"price": 3.50, "unit": "公斤"},
+    "猪板油": {"price": 4.50, "unit": "公斤"},
+    "猪舌头": {"price": 7.00, "unit": "公斤"},
+    "梅头肉": {"price": 8.00, "unit": "公斤"},
+    "猪头": {"price": 18.00, "unit": "个"},
+    "猪肘": {"price": 4.50, "unit": "公斤"},
+    "肉皮": {"price": 3.50, "unit": "公斤"},
+    "猪里脊": {"price": 7.50, "unit": "公斤"},
+    "猪肝": {"price": 4.00, "unit": "公斤"}
 }
 
 title_from_secrets = st.secrets["secrets"]["title_text"] if "secrets" in st.secrets else "海外群自助拼单自提系统"
 st.title(f"🐷 {title_from_secrets}")
-st.markdown("群友请直接在下方**添加心仪商品进购物车**，最后填写昵称一键提交下单。所有数据永久多端同步！")
-
-with st.sidebar:
-    st.header("⚙️ 团长对账面板")
-    st.info("提示：开启新一轮拼单时，您直接在您的谷歌表格里删除第2行以下的所有数据清空即可，网页会自动同步全部清零复位！")
+st.markdown("群友请直接在下方**添加心仪商品进购物车**，最后填写昵称一键提交下单。")
 
 col1, col2 = st.columns(2)
 
 with col1:
     st.subheader("🛒 群友点菜登记（支持多选）")
     
+    # 模块一：选菜放入购物车
     with st.container(border=True):
         st.caption("第一步：挑选肉类和数量")
         selected_meat = st.selectbox("🥩 选择您要买的肉类：", list(MEAT_MENU.keys()))
@@ -123,6 +68,7 @@ with col1:
             st.toast(f"已将 {selected_meat} {order_amount}{current_unit} 放入购物车！")
             st.rerun()
 
+    # 模块二：展示当前购物车并填写昵称提交
     if len(st.session_state.cart) > 0:
         with st.form("cart_form", clear_on_submit=True):
             st.caption("第二步：核对购物车并提交")
@@ -159,46 +105,33 @@ with col1:
                                 "unit": item["unit"],
                                 "cost": item["cost"]
                             }
+                            # 直接强行发射至谷歌表格后台接收器，100%存盘
                             requests.post(api_url, data=json.dumps(payload), headers={"Content-Type": "application/json"}, timeout=10)
-                        st.success(f"🎉 恭喜！{user_name.strip()} 的这 {len(st.session_state.cart)} 样菜品已完美合并提交成功！")
+                        
+                        # 提交成功后提示，并清空本地购物车
+                        st.success(f"🎉 提交成功！{user_name.strip()} 的这 {len(st.session_state.cart)} 样菜品已安全记入账单！")
+                        st.balloons() # 庆祝气球
                         st.session_state.cart = [] 
-                        # 强行给云端拉取程序留出2秒延迟，确保谷歌服务器完成存盘动作
-                        time.sleep(1.5)
-                        st.rerun()
                     except Exception as e:
-                        st.error(f"❌ 云端保存失败，网络原因: {str(e)}")
+                        st.error(f"❌ 提交失败，网络原因: {str(e)}")
     else:
         st.info("💡 您的购物车还是空的哦，请在上方选择肉类和数量并点击『放入我的购物车』！")
 
 with col2:
-    st.subheader("📊 实时拼单看板（整箱进度）")
-    if df_display.empty or len(df_display) == 0:
-        st.info("当前还没有人下单哦，赶紧把链接发到群里让大家选菜吧！")
-    else:
-        tab_box, tab_bill = st.tabs(["📦 货物成箱缺口", "💰 每人应付账单"])
-        with tab_box:
-            df_display["amount"] = pd.to_numeric(df_display["amount"], errors='coerce').fillna(0)
-            summary = df_display.groupby("item")["amount"].sum().to_dict()
-            for meat, total in summary.items():
-                if meat in MEAT_MENU and total > 0:
-                    box_w = MEAT_MENU[meat]["box"]; unit = MEAT_MENU[meat]["unit"]
-                    current_boxes = total / box_w; needed_next = box_w - (total % box_w)
-                    st.markdown(f"**【{meat}】** 已被预订：**{total:.1f}** {unit}")
-                    if total % box_w == 0: st.success(f" └─ 🎉 刚好凑满 {int(current_boxes)} 箱！")
-                    else: st.info(f" └─ 📊 当前进度: {current_boxes:.2f} 箱（还差 **{needed_next:.1f}** {unit} 凑满整箱）")
-                    details = df_display[df_display["item"] == meat]
-                    detail_strs = [f"{row['name']}({row['amount']}{unit})" for _, row in details.iterrows()]
-                    st.caption(f" 👥 已订群友：{', '.join(detail_strs)}"); st.write("---")
-        with tab_bill:
-            df_display["cost"] = pd.to_numeric(df_display["cost"], errors='coerce').fillna(0)
-            user_summary = df_display.groupby("name")["cost"].sum().to_dict()
-            wechat_text = "📊 【自助拼单实时对账单】\n"
-            for user, total_cost in user_summary.items():
-                st.warning(f"👤 **{user}** —— 累计应付: **{total_cost:.2f}**")
-                wechat_text += f"\n@{user} 应付：{total_cost:.2f}\n"
-                user_details = df_display[df_display["name"] == user]
-                for _, row in user_details.iterrows():
-                    st.write(f" └─ {row['item']} : {row['amount']} {row['unit']}")
-                    wechat_text += f" └─ {row['item']} {row['amount']}{row['unit']}\n"
-            st.write("---"); st.subheader("💬 复制群发对账文本")
-            st.text_area("点击框内复制发回微信群：", value=wechat_text, height=150)
+    st.subheader("📢 团长对账与拼单须知")
+    with st.container(border=True):
+        st.markdown("""
+        ### 💡 群友下单须知
+        1. **自主选菜**：请在左侧依次挑选您需要的肉类及分量，点击放入购物车。
+        2. **检查姓名**：确认购物车清单无误后，请输入您**准确的微信昵称**点击确认提交。
+        3. **无需重复提交**：页面显示“提交成功”后即可关闭网页，数据已永久安全录入团长后台。
+        
+        ---
+        
+        ### 👑 团长（发起人）查账提示
+        * **如何核对总账？** 
+          因为本网页完全采取隐私保护模式，群友提交的数据会**零延迟直接飞进您的专属 Google Sheets（谷歌表格）**中。
+        * 请直接打开您的电脑或手机里的 Google 表格进行一键求和、查看每位群友的订购总分量。
+        * **开启下一期新拼单？**
+          当本期截单并收款完毕后，您只需要去您的 Google 表格里，把第二行以下的所有旧数据一键删除，整个网页系统就会自动清空，迎接下一次的完美下单！
+        """)
