@@ -1,9 +1,8 @@
-### -*- coding: utf-8 -*-
-
 import streamlit as st
 import re
 import pandas as pd
-from io import BytesIO 
+from io import BytesIO
+
 
 st.set_page_config(page_title="微信群拼单智能统计工具", page_icon="🐷", layout="wide")
 
