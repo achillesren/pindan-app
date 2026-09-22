@@ -1,4 +1,3 @@
-#
 import streamlit as st 
 
 st.set_page_config(page_title="群友自助点菜", page_icon="🐷")
