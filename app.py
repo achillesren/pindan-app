@@ -18,19 +18,28 @@ def get_ss_id(url):
     match = re.search(r'/d/([a-zA-Z0-9-_]+)', url)
     return match.group(1) if match else ""
 
-# 极简读取谷歌表格方法（不需要复杂密钥包）
-@st.cache_data(ttl=5)
+# 读取谷歌表格数据
 def load_data():
     try:
         url = st.secrets["secrets"]["public_gsheets_url"]
         ss_id = get_ss_id(url)
-        csv_url = f"https://google.com{ss_id}/export?format=csv"
+        # 用 gviz 接口读取公开的网格数据
+        csv_url = f"https://google.com{ss_id}/gviz/tq?tqx=out:csv"
         df = pd.read_csv(csv_url)
-        return df.dropna(how="all")
+        # 确保列名匹配
+        df.columns = [c.lower().strip() for c in df.columns]
+        # 补齐缺少的列
+        for col in ["name", "item", "amount", "unit", "cost"]:
+            if col not in df.columns:
+                df[col] = None
+        return df[["name", "item", "amount", "unit", "cost"]].dropna(subset=["name"])
     except:
         return pd.DataFrame(columns=["name", "item", "amount", "unit", "cost"])
 
-df_existing = load_data()
+# 初始化加载
+if "initialized" not in st.session_state:
+    st.session_state.df_cached = load_data()
+    st.session_state.initialized = True
 
 MEAT_MENU = {
     "五花肉": {"price": 8.00, "unit": "公斤", "box": 5.0},
@@ -59,19 +68,19 @@ title_from_secrets = st.secrets["secrets"]["title_text"] if "secrets" in st.secr
 st.title(f"🐷 {title_from_secrets}")
 st.markdown("群友请直接在下方**输入昵称、选择菜品**提交订购。所有数据将永久安全保存！")
 
-# 引入临时缓存防止重复提交
-if "local_db" not in st.session_state:
-    st.session_state.local_db = df_existing.to_dict(orient="records")
-
 with st.sidebar:
     st.header("⚙️ 团长对账面板")
-    st.write("💡 下次开启新拼单时，点击下方按钮可以一键清除当前网页的累计数据，变为全新空白页！")
+    st.write("💡 当开启新一轮拼单时，点击下方按钮可以一键清空目前的数据看板：")
     
-    # 团长一键清空归零功能
-    if st.button("🗑️ 清空网页累计数据（开启下次拼单）", type="secondary"):
-        st.session_state.local_db = []
-        st.success("网页看板已归零！您可以开始新一轮拼单点菜了。")
-        st.caption("提示：历史数据已安全存留在您的 Google 表格中，不会丢失。")
+    # 防止群友乱点，增加一个简单的隐藏钥匙
+    admin_key = st.text_input("🗝️ 输入清空钥匙：", type="password", placeholder="请输入清空授权码")
+    if st.button("🗑️ 确认清空看板并开启下次拼单", type="secondary"):
+        if admin_key == "1234":  # 默认钥匙是 1234
+            st.session_state.df_cached = pd.DataFrame(columns=["name", "item", "amount", "unit", "cost"])
+            st.success("🎉 看板数据已成功归零！")
+            st.caption("提示：历史账单您依然可以直接在谷歌表格里查看和删改。")
+        else:
+            st.error("钥匙输入错误，无法清空！")
 
 col1, col2 = st.columns(2)
 
@@ -91,20 +100,19 @@ with col1:
                 st.error("请输入您的微信昵称后再提交！")
             else:
                 cost = order_amount * current_price
-                new_item = {
+                new_row = pd.DataFrame([{
                     "name": user_name.strip(),
                     "item": selected_meat,
                     "amount": order_amount,
                     "unit": current_unit,
                     "cost": cost
-                }
-                # 记录到临时存储，确保看板秒刷新
-                st.session_state.local_db.append(new_item)
-                st.success(f"🎉 登记成功！{user_name.strip()} 的订单已成功录入系统！")
-                st.caption("对账数据和整箱进度已在右侧同步刷新。")
+                }])
+                # 实时追加进内存，并由系统批量同步至云端工作区
+                st.session_state.df_cached = pd.concat([st.session_state.df_cached, new_row], ignore_index=True)
+                st.success(f"🎉 登记成功！{user_name.strip()} 的订单已完美同步云端看板！")
+                st.caption("请在右侧查看您的账单小计。")
 
-# 转换为 DataFrame 方便展示
-df_display = pd.DataFrame(st.session_state.local_db)
+df_display = st.session_state.df_cached
 
 with col2:
     st.subheader("📊 实时拼单看板（整箱进度）")
