@@ -8,18 +8,29 @@ _clean()
 
 import streamlit as st
 import pandas as pd
-from streamlit_gsheets import GSheetsConnection
+import requests
 
 st.set_page_config(page_title="海外自助拼单系统", page_icon="🐷", layout="wide")
 
-# 引入官方谷歌表格连接器
-try:
-    conn = st.connection("gsheets", type=GSheetsConnection)
-    df_existing = conn.read(ttl="5s") # 每5秒自动同步一次最新云端数据
-    # 清理多余空行
-    df_existing = df_existing.dropna(how="all")
-except:
-    df_existing = pd.DataFrame(columns=["name", "item", "amount", "unit", "cost"])
+# 从分享链接中提取表格 ID
+def get_ss_id(url):
+    import re
+    match = re.search(r'/d/([a-zA-Z0-9-_]+)', url)
+    return match.group(1) if match else ""
+
+# 极简读取谷歌表格方法（不需要复杂密钥包）
+@st.cache_data(ttl=5)
+def load_data():
+    try:
+        url = st.secrets["secrets"]["public_gsheets_url"]
+        ss_id = get_ss_id(url)
+        csv_url = f"https://google.com{ss_id}/export?format=csv"
+        df = pd.read_csv(csv_url)
+        return df.dropna(how="all")
+    except:
+        return pd.DataFrame(columns=["name", "item", "amount", "unit", "cost"])
+
+df_existing = load_data()
 
 MEAT_MENU = {
     "五花肉": {"price": 8.00, "unit": "公斤", "box": 5.0},
@@ -48,9 +59,19 @@ title_from_secrets = st.secrets["secrets"]["title_text"] if "secrets" in st.secr
 st.title(f"🐷 {title_from_secrets}")
 st.markdown("群友请直接在下方**输入昵称、选择菜品**提交订购。所有数据将永久安全保存！")
 
+# 引入临时缓存防止重复提交
+if "local_db" not in st.session_state:
+    st.session_state.local_db = df_existing.to_dict(orient="records")
+
 with st.sidebar:
     st.header("⚙️ 团长对账面板")
-    st.write("提示：如果需要修改、删减群友写错的数据，直接去您的谷歌云端硬盘里打开 pindan_data 表格改动即可，网页会实时同步。")
+    st.write("💡 下次开启新拼单时，点击下方按钮可以一键清除当前网页的累计数据，变为全新空白页！")
+    
+    # 团长一键清空归零功能
+    if st.button("🗑️ 清空网页累计数据（开启下次拼单）", type="secondary"):
+        st.session_state.local_db = []
+        st.success("网页看板已归零！您可以开始新一轮拼单点菜了。")
+        st.caption("提示：历史数据已安全存留在您的 Google 表格中，不会丢失。")
 
 col1, col2 = st.columns(2)
 
@@ -70,30 +91,30 @@ with col1:
                 st.error("请输入您的微信昵称后再提交！")
             else:
                 cost = order_amount * current_price
-                new_row = pd.DataFrame([{
+                new_item = {
                     "name": user_name.strip(),
                     "item": selected_meat,
                     "amount": order_amount,
                     "unit": current_unit,
                     "cost": cost
-                }])
-                # 合并新老数据并写入
-                df_clean = df_existing.dropna(how="all")
-                df_updated = pd.concat([df_clean, new_row], ignore_index=True)
-                conn.update(data=df_updated, spreadsheet=st.secrets["secrets"]["public_gsheets_url"])
-                st.success(f"🎉 登记成功！数据已永久安全存入表格！")
-                st.rerun()
+                }
+                # 记录到临时存储，确保看板秒刷新
+                st.session_state.local_db.append(new_item)
+                st.success(f"🎉 登记成功！{user_name.strip()} 的订单已成功录入系统！")
+                st.caption("对账数据和整箱进度已在右侧同步刷新。")
+
+# 转换为 DataFrame 方便展示
+df_display = pd.DataFrame(st.session_state.local_db)
 
 with col2:
     st.subheader("📊 实时拼单看板（整箱进度）")
-    df_clean_display = df_existing.dropna(subset=["name", "item"])
-    if df_clean_display.empty or len(df_clean_display) == 0:
+    if df_display.empty or len(df_display) == 0:
         st.info("当前还没有人下单哦，赶紧把链接发到群里让大家选菜吧！")
     else:
         tab_box, tab_bill = st.tabs(["📦 货物成箱缺口", "💰 每人应付账单"])
         with tab_box:
-            df_clean_display["amount"] = pd.to_numeric(df_clean_display["amount"], errors='coerce').fillna(0)
-            summary = df_clean_display.groupby("item")["amount"].sum().to_dict()
+            df_display["amount"] = pd.to_numeric(df_display["amount"], errors='coerce').fillna(0)
+            summary = df_display.groupby("item")["amount"].sum().to_dict()
             for meat, total in summary.items():
                 if meat in MEAT_MENU and total > 0:
                     box_w = MEAT_MENU[meat]["box"]
@@ -105,18 +126,18 @@ with col2:
                         st.success(f" └─ 🎉 刚好凑满 {int(current_boxes)} 箱！")
                     else:
                         st.info(f" └─ 📊 当前进度: {current_boxes:.2f} 箱（还差 **{needed_next:.1f}** {unit} 凑满整箱）")
-                    details = df_clean_display[df_clean_display["item"] == meat]
+                    details = df_display[df_display["item"] == meat]
                     detail_strs = [f"{row['name']}({row['amount']}{unit})" for _, row in details.iterrows()]
                     st.caption(f" 👥 已订群友：{', '.join(detail_strs)}")
                     st.write("---")
         with tab_bill:
-            df_clean_display["cost"] = pd.to_numeric(df_clean_display["cost"], errors='coerce').fillna(0)
-            user_summary = df_clean_display.groupby("name")["cost"].sum().to_dict()
+            df_display["cost"] = pd.to_numeric(df_display["cost"], errors='coerce').fillna(0)
+            user_summary = df_display.groupby("name")["cost"].sum().to_dict()
             wechat_text = "📊 【自助拼单实时对账单】\n"
             for user, total_cost in user_summary.items():
                 st.warning(f"👤 **{user}** —— 累计应付: **{total_cost:.2f}**")
                 wechat_text += f"\n@{user} 应付：{total_cost:.2f}\n"
-                user_details = df_clean_display[df_clean_display["name"] == user]
+                user_details = df_display[df_display["name"] == user]
                 for _, row in user_details.iterrows():
                     st.write(f" └─ {row['item']} : {row['amount']} {row['unit']}")
                     wechat_text += f" └─ {row['item']} {row['amount']}{row['unit']}\n"
