@@ -18,7 +18,8 @@ def get_ss_id(url):
     match = re.search(r'/d/([a-zA-Z0-9-_]+)', url)
     return match.group(1) if match else ""
 
-def load_data():
+# 每次刷新都实时去 Google 表格拉取最新数据
+def load_data_live():
     try:
         url = st.secrets["secrets"]["public_gsheets_url"]
         ss_id = get_ss_id(url)
@@ -31,8 +32,11 @@ def load_data():
     except:
         return pd.DataFrame(columns=["name", "item", "amount", "unit", "cost"])
 
-if "df_cached" not in st.session_state:
-    st.session_state.df_cached = load_data()
+df_display = load_data_live()
+
+# 初始化每位用户本地独立的购物车缓存
+if "cart" not in st.session_state:
+    st.session_state.cart = []
 
 MEAT_MENU = {
     "五花肉": {"price": 8.00, "unit": "公斤", "box": 5.0},
@@ -59,52 +63,87 @@ MEAT_MENU = {
 
 title_from_secrets = st.secrets["secrets"]["title_text"] if "secrets" in st.secrets else "海外群自助拼单自提系统"
 st.title(f"🐷 {title_from_secrets}")
-st.markdown("群友请直接在下方**输入昵称、选择菜品**提交订购。所有数据将永久安全保存！")
+st.markdown("群友请直接在下方**添加心仪商品进购物车**，最后填写昵称一键提交下单。所有数据永久多端同步！")
 
 with st.sidebar:
     st.header("⚙️ 团长对账面板")
-    admin_key = st.text_input("🗝️ 输入清空钥匙：", type="password", placeholder="请输入清空授权码")
-    if st.button("🗑️ 确认清空看板并开启下次拼单", type="secondary"):
-        if admin_key == "1234":
-            st.session_state.df_cached = pd.DataFrame(columns=["name", "item", "amount", "unit", "cost"])
-            st.success("🎉 看板数据已成功归零！")
-        else: st.error("钥匙输入错误，无法清空！")
+    st.info("提示：开启新一轮拼单时，您直接在您的谷歌表格里删除第2行以下的所有数据清空即可，网页会自动同步全部清零复位！")
 
 col1, col2 = st.columns(2)
+
 with col1:
-    st.subheader("🛒 群友点菜登记")
-    with st.form("order_form", clear_on_submit=True):
-        user_name = st.text_input("👤 您的微信昵称（必填）：", placeholder="请输入您的名字，方便对账")
+    st.subheader("🛒 群友点菜登记（支持多选）")
+    
+    # 模块一：选菜放入购物车
+    with st.container(border=True):
+        st.caption("第一步：挑选肉类和数量")
         selected_meat = st.selectbox("🥩 选择您要买的肉类：", list(MEAT_MENU.keys()))
         current_unit = MEAT_MENU[selected_meat]["unit"]
         current_price = MEAT_MENU[selected_meat]["price"]
-        st.caption(f"当前单价: **{current_price:.2f}** / {current_unit}")
-        order_amount = st.number_input(f"🔢 订购数量（单位：{current_unit}）：", min_value=0.1, value=1.0, step=0.5)
-        submit_btn = st.form_submit_button("🚀 提交我的拼单", type="primary")
+        st.write(f"当前单价: **{current_price:.2f}** / {current_unit}")
+        order_amount = st.number_input(f"🔢 欲购数量（单位：{current_unit}）：", min_value=0.1, value=1.0, step=0.5)
         
-        if submit_btn:
-            if not user_name.strip(): st.error("请输入您的微信昵称后再提交！")
-            else:
-                cost = order_amount * current_price
-                payload = {"name": user_name.strip(), "item": selected_meat, "amount": order_amount, "unit": current_unit, "cost": cost}
-                new_row = pd.DataFrame([payload])
-                st.session_state.df_cached = pd.concat([st.session_state.df_cached, new_row], ignore_index=True)
-                
-                # 显式捕获云端接口的真实反馈
-                try:
-                    api_url = st.secrets["secrets"]["script_api_url"]
-                    res = requests.post(api_url, data=json.dumps(payload), headers={"Content-Type": "application/json"}, timeout=10)
-                    st.info(f"📡 传输状态反馈 ➔ 状态码: {res.status_code} | 返回信息: {res.text[:100]}")
-                except Exception as e:
-                    st.error(f"❌ 传输失败，网络原因: {str(e)}")
-                
-                st.success(f"🎉 登记成功！{user_name.strip()} 的订单已更新！")
-                st.rerun()
+        if st.button("➕ 放入我的购物车", type="secondary", use_container_width=True):
+            cost = order_amount * current_price
+            st.session_state.cart.append({
+                "item": selected_meat,
+                "amount": order_amount,
+                "unit": current_unit,
+                "cost": cost
+            })
+            st.toast(f"已将 {selected_meat} {order_amount}{current_unit} 放入购物车！")
 
-df_display = st.session_state.df_cached
+    # 模块二：展示当前购物车并填写昵称提交
+    if st.session_state.cart:
+        with st.form("cart_form", clear_on_submit=True):
+            st.caption("第二步：核对购物车并提交")
+            st.write("📋 **您当前挑选的菜品清单：**")
+            total_cart_cost = 0.0
+            for idx, item in enumerate(st.session_state.cart):
+                st.write(f" ├─ {item['item']} : {item['amount']} {item['unit']} (小计: {item['cost']:.2f})")
+                total_cart_cost += item["cost"]
+            st.markdown(f"💰 购物车总额: **{total_cart_cost:.2f}**")
+            
+            user_name = st.text_input("👤 您的微信昵称（必填）：", placeholder="请输入您的名字，方便对账")
+            
+            col_btn1, col_btn2 = st.columns(2)
+            with col_btn1:
+                submit_btn = st.form_submit_button("🚀 确认提交拼单", type="primary", use_container_width=True)
+            with col_btn2:
+                clear_cart = st.form_submit_button("❌ 清空购物车", type="secondary", use_container_width=True)
+            
+            if clear_cart:
+                st.session_state.cart = []
+                st.rerun()
+                
+            if submit_btn:
+                if not user_name.strip():
+                    st.error("请输入您的微信昵称后再提交！")
+                else:
+                    # 批量把购物车里的所有东西一条条发往谷歌表格网关
+                    try:
+                        api_url = st.secrets["secrets"]["script_api_url"]
+                        for item in st.session_state.cart:
+                            payload = {
+                                "name": user_name.strip(),
+                                "item": item["item"],
+                                "amount": item["amount"],
+                                "unit": item["unit"],
+                                "cost": item["cost"]
+                            }
+                            requests.post(api_url, data=json.dumps(payload), headers={"Content-Type": "application/json"}, timeout=10)
+                        st.success(f"🎉 恭喜！{user_name.strip()} 的这 {len(st.session_state.cart)} 样菜品已完美合并提交成功！")
+                        st.session_state.cart = [] # 成功后清空购物车
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ 云端保存失败，网络原因: {str(e)}")
+    else:
+        st.info("💡 您的购物车还是空的哦，请在上方选择肉类和数量并点击『放入我的购物车』！")
+
 with col2:
     st.subheader("📊 实时拼单看板（整箱进度）")
-    if df_display.empty or len(df_display) == 0: st.info("当前还没有人下单哦！")
+    if df_display.empty or len(df_display) == 0:
+        st.info("当前还没有人下单哦，赶紧把链接发到群里让大家选菜吧！")
     else:
         tab_box, tab_bill = st.tabs(["📦 货物成箱缺口", "💰 每人应付账单"])
         with tab_box:
