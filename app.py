@@ -28,9 +28,14 @@ def load_data_live():
         df.columns = [c.lower().strip() for c in df.columns]
         for col in ["name", "item", "amount", "unit", "cost"]:
             if col not in df.columns: df[col] = None
+        # 自动强行擦除所有人名字前后的隐形空格，确保看板完美显示
+        df["name"] = df["name"].astype(str).str.strip()
+
         return df[["name", "item", "amount", "unit", "cost"]].dropna(subset=["name"])
     except:
         return pd.DataFrame(columns=["name", "item", "amount", "unit", "cost"])
+                
+
 
 df_display = load_data_live()
 
